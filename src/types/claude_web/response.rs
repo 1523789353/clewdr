@@ -79,11 +79,19 @@ impl ClaudeWebState {
         let stream = stream.eventsource();
         let text = merge_sse(stream).await?;
         print_out_text(text.to_owned(), "non_stream.txt");
-        Ok(Json(CreateMessageResponse::text(
+        let mut response = CreateMessageResponse::text(
             text,
             Default::default(),
             self.usage.to_owned(),
-        ))
+        );
+        self.usage.output_tokens = response.count_tokens();
+        response.usage = Some(self.usage.to_owned());
+        Ok(Json(response)
+        // Ok(Json(CreateMessageResponse::text(
+        //     text,
+        //     Default::default(),
+        //     self.usage.to_owned(),
+        // ))
         .into_response())
     }
 }
