@@ -84,8 +84,9 @@ impl ClaudeWebState {
             Default::default(),
             self.usage.to_owned(),
         );
-        self.usage.output_tokens = response.count_tokens();
-        response.usage = Some(self.usage.to_owned());
+        let mut usage = self.usage.to_owned();
+        usage.output_tokens = response.count_tokens();
+        response.usage = Some(usage);
         Ok(Json(response)
         // Ok(Json(CreateMessageResponse::text(
         //     text,

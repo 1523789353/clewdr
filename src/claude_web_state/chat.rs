@@ -48,7 +48,7 @@ impl ClaudeWebState {
                 Ok(cookie) => cookie,
                 Err(_) => {
                     return Err(ClewdrError::InvalidCookie {
-                        reason: "No cookie available".to_string(),
+                        reason: crate::config::Reason::Null,
                     })
                 }
             };
