@@ -212,6 +212,7 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
+    /// Image content
     #[serde(rename = "image")]
     Image { source: ImageSource },
     #[serde(rename = "image_url")]
@@ -285,7 +286,7 @@ pub struct Metadata {
 }
 
 /// Response from creating a message
-#[derive(Debug, Deserialize, Serialize, Default,Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct CreateMessageResponse {
     /// Content blocks in the response
     pub content: Vec<ContentBlock>,
@@ -460,6 +461,10 @@ pub struct MessageStartContent {
     pub role: Role,
     pub content: Vec<ContentBlock>,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
     pub stop_reason: Option<StopReason>,
     pub stop_sequence: Option<String>,
     pub usage: Option<Usage>,

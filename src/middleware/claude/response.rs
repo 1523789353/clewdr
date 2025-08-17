@@ -220,7 +220,7 @@ pub async fn add_usage_info(mut resp: Response) -> impl IntoResponse {
             };
             match parsed {
                 StreamEvent::MessageStart { mut message } => {
-                    message.usage.get_or_insert(usage.to_owned());
+                    message.usage = Some(usage.to_owned());
                     new_event
                         .json_data(StreamEvent::MessageStart { message })
                         .unwrap()
