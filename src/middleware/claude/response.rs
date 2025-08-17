@@ -16,7 +16,6 @@ use crate::{
 use futures::StreamExt;
 use crate::types::claude::{ContentBlock, Usage};
 
-
 async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Response> {
     let mut completion = String::new();
     let mut response = CreateMessageResponse::default();
@@ -28,10 +27,9 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
 
     while let Some(Ok(event)) = stream.next().await {
         if event.event == "error" {
-            warn!("[PSEUDO] SSE error: {}", event.data);
+            warn!("SSE error: {}", event.data);
             continue;
         }
-        tracing::info!("[PSEUDO] Upstream chunk received: {}", event.data);
         let Ok(parsed) = serde_json::from_str::<StreamEvent>(&event.data) else {
             continue;
         };
@@ -47,8 +45,14 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
                 }
             }
             StreamEvent::ContentBlockDelta { delta, .. } => {
-                if let crate::types::claude::ContentBlockDelta::TextDelta { text } = delta {
-                    completion.push_str(&text);
+                match delta {
+                    crate::types::claude::ContentBlockDelta::TextDelta { text } => {
+                        completion.push_str(&text);
+                    }
+                    crate::types::claude::ContentBlockDelta::ThinkingDelta { thinking } => {
+                        completion.push_str(&thinking);
+                    }
+                    _ => (),
                 }
             }
             StreamEvent::MessageDelta { delta, usage: new_usage } => {
@@ -59,22 +63,21 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
                     usage.output_tokens += u.output_tokens;
                 }
             }
-            StreamEvent::MessageStop { .. } => {
-                // The final usage is often in MessageDelta, but we can confirm here
-            }
+            StreamEvent::MessageStop { .. } => {}
             _ => (),
         }
     }
 
     response.content = vec![ContentBlock::text(completion)];
     response.stop_reason = stop_reason;
-    response.usage = Some(usage);
 
-    tracing::info!("[PSEUDO] Downstream non-stream response created.");
-    crate::utils::print_out_json(&response, "pseudo_downstream_resp.json");
+    // Calculate output tokens as a fallback, since usage field in stream is not always reliable
+    usage.output_tokens = response.count_tokens();
+    response.usage = Some(usage);
 
     Ok(response)
 }
+
 
 async fn parse_response<T>(resp: Response) -> Result<T, Response>
 where
