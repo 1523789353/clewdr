@@ -123,12 +123,9 @@ where
         // Determine streaming status and API format
         let stream = body.stream.unwrap_or_default();
         let config = CLEWDR_CONFIG.load();
+        tracing::info!("[CONFIG] claude_cookie_pseudo_non_stream: {}", config.claude_cookie_pseudo_non_stream);
         let pseudo_non_stream = if config.claude_cookie_pseudo_non_stream && !stream {
-            tracing::info!("[PSEUDO] Downstream non-stream request received. Activating pseudo non-stream mode.");
-            crate::utils::print_out_json(&body, "pseudo_downstream_req.json");
             body.stream = Some(true); // Force stream for upstream
-            tracing::info!("[PSEUDO] Upstream stream request created.");
-            crate::utils::print_out_json(&body, "pseudo_upstream_req.json");
             true
         } else {
             false
