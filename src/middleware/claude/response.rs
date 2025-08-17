@@ -43,7 +43,6 @@ async fn aggregate_stream(
                 response.type_ = message.type_;
                 response.role = message.role;
                 response.model = message.model;
-                // message.usage in start event is not reliable, we use the one from context
             }
             StreamEvent::ContentBlockStart {
                 index,
@@ -128,31 +127,14 @@ where
     Ok(parsed)
 }
 
-/// Transforms responses to ensure compatibility with the OpenAI API format
-///
-/// This middleware function analyzes responses and transforms them when necessary
-/// to ensure compatibility between Claude and OpenAI API formats, particularly
-/// for streaming responses. If the response is:
-///
-/// - From the Claude API format: No transformation needed
-/// - Not streaming: No transformation needed
-/// - Has a non-200 status code: No transformation needed
-/// - OpenAI format and streaming: Transforms the stream to match OpenAI event format
-///
-/// # Arguments
-///
-/// * `resp` - The original response to be potentially transformed
-///
-/// # Returns
-///
-/// The original or transformed response as appropriate
-pub async fn to_oai(mut resp: Response) -> impl IntoResponse {
-    let Some(cx) = resp.extensions_mut().remove::<ClaudeContext>() else {
+pub async fn to_oai(resp: Response) -> impl IntoResponse {
+    let cx_clone = resp.extensions().get::<ClaudeContext>().cloned();
+
+    let Some(cx) = cx_clone else {
         return resp.into_response();
     };
+
     if ClaudeApiFormat::Claude == cx.api_format() {
-        // re-insert the context for other middlewares
-        resp.extensions_mut().insert(cx);
         return resp.into_response();
     }
 
@@ -168,8 +150,7 @@ pub async fn to_oai(mut resp: Response) -> impl IntoResponse {
             Err(resp) => resp,
         };
     }
-    // re-insert the context for other middlewares
-    resp.extensions_mut().insert(cx);
+
     let stream = resp.into_body().into_data_stream().eventsource();
     let stream = transform_stream(stream);
     Sse::new(stream)
@@ -177,8 +158,10 @@ pub async fn to_oai(mut resp: Response) -> impl IntoResponse {
         .into_response()
 }
 
-pub async fn add_usage_info(mut resp: Response) -> impl IntoResponse {
-    let Some(cx) = resp.extensions_mut().remove::<ClaudeContext>() else {
+pub async fn add_usage_info(resp: Response) -> impl IntoResponse {
+    let cx_clone = resp.extensions().get::<ClaudeContext>().cloned();
+
+    let Some(cx) = cx_clone else {
         return resp.into_response();
     };
 
@@ -189,7 +172,7 @@ pub async fn add_usage_info(mut resp: Response) -> impl IntoResponse {
         };
     }
 
-    let (mut usage, stream) = (cx.usage().to_owned(), cx.is_stream());
+    let (usage, stream) = (cx.usage().to_owned(), cx.is_stream());
     if !stream {
         let mut response = match parse_response::<CreateMessageResponse>(resp).await {
             Ok(response) => response,
@@ -200,8 +183,7 @@ pub async fn add_usage_info(mut resp: Response) -> impl IntoResponse {
         response.usage = Some(usage);
         return Json(response).into_response();
     }
-    // re-insert the context for other middlewares
-    resp.extensions_mut().insert(cx);
+
     let stream = resp
         .into_body()
         .into_data_stream()
@@ -254,7 +236,7 @@ pub async fn check_overloaded(mut resp: Response) -> Response {
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| !v.contains("text-event-stream"))
+        .is_some_and(|v| !v.contains("text/event-stream"))
     {
         resp.extensions_mut().remove::<ClaudeContext>();
     }
