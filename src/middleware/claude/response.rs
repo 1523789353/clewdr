@@ -15,9 +15,11 @@ use crate::{
 };
 use futures::StreamExt;
 
-async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Response> {
+async fn aggregate_stream(resp: Response, cx: &ClaudeContext) -> Result<CreateMessageResponse, Response> {
     let mut response = CreateMessageResponse::default();
-    let mut usage = Usage::default();
+    let mut usage = cx.usage().to_owned();
+    usage.output_tokens = 0; // Reset output tokens before accumulating
+
     let mut stop_reason = None;
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
 
@@ -38,9 +40,7 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
                 response.type_ = message.type_;
                 response.role = message.role;
                 response.model = message.model;
-                if let Some(u) = message.usage {
-                    usage.input_tokens = u.input_tokens;
-                }
+                // message.usage in start event is not reliable, we use the one from context
             }
             StreamEvent::ContentBlockStart { index, content_block } => {
                 if index >= content_blocks.len() {
@@ -76,7 +76,12 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
     response.content = content_blocks;
     response.stop_reason = stop_reason;
 
-    usage.output_tokens = response.count_tokens();
+    // Recalculate output tokens as a fallback
+    let final_output_tokens = response.count_tokens();
+    if usage.output_tokens == 0 && final_output_tokens > 0 {
+        usage.output_tokens = final_output_tokens;
+    }
+
     response.usage = Some(usage);
 
     Ok(response)
@@ -129,7 +134,7 @@ pub async fn to_oai(resp: Response) -> impl IntoResponse {
     }
 
     if cx.pseudo_non_stream() {
-        return match aggregate_stream(resp).await {
+        return match aggregate_stream(resp, cx).await {
             Ok(response) => Json(transforms_json(response)).into_response(),
             Err(resp) => resp,
         };
@@ -153,7 +158,7 @@ pub async fn add_usage_info(resp: Response) -> impl IntoResponse {
     };
 
     if cx.pseudo_non_stream() {
-        return match aggregate_stream(resp).await {
+        return match aggregate_stream(resp, cx).await {
             Ok(response) => Json(response).into_response(),
             Err(resp) => resp,
         };
