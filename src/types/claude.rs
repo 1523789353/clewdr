@@ -335,7 +335,7 @@ impl CreateMessageResponse {
 }
 
 /// Reason for stopping message generation
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,

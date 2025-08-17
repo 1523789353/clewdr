@@ -14,7 +14,7 @@ use crate::{
     types::claude::{CreateMessageResponse, StreamEvent},
 };
 use futures::StreamExt;
-use crate::types::claude::{ContentBlock, StreamUsage, StopReason, Usage};
+use crate::types::claude::{ContentBlock, Usage};
 
 
 async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Response> {
