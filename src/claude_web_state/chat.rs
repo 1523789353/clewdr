@@ -46,11 +46,7 @@ impl ClaudeWebState {
             // let cookie = state.request_cookie().await?;
             let cookie = match state.request_cookie().await {
                 Ok(cookie) => cookie,
-                Err(_) => {
-                    return Err(ClewdrError::InvalidCookie {
-                        reason: crate::config::Reason::Null,
-                    })
-                }
+                Err(_) => Err(ClewdrError::NoCookieAvailable)
             };
             // check if request is successful
             let web_res = async { state.bootstrap().await.and(state.send_chat(p).await) };
