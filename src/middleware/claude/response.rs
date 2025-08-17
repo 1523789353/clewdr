@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use axum::{
     body::{self, Body},
     response::{IntoResponse, Response, Sse},
@@ -7,12 +9,13 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
+use tiktoken_rs::o200k_base;
 use tracing::warn;
 
 use super::{ClaudeApiFormat, transform_stream};
 use crate::{
     middleware::claude::{transforms_json, ClaudeContext},
-    types::claude::{ContentBlock, CreateMessageResponse, StreamEvent},
+    types::claude::{ContentBlock, CreateMessageResponse, StreamEvent, StreamUsage, Usage},
 };
 
 async fn aggregate_stream(
@@ -172,23 +175,26 @@ pub async fn add_usage_info(resp: Response) -> impl IntoResponse {
         };
     }
 
-    let (mut usage, stream) = (cx.usage().to_owned(), cx.is_stream());
+    let (usage_from_context, stream) = (cx.usage().to_owned(), cx.is_stream());
     if !stream {
         let mut response = match parse_response::<CreateMessageResponse>(resp).await {
             Ok(response) => response,
             Err(resp) => return resp,
         };
         let output_tokens = response.count_tokens();
-        usage.output_tokens = output_tokens;
-        response.usage = Some(usage);
+        usage_from_context.output_tokens = output_tokens;
+        response.usage = Some(usage_from_context);
         return Json(response).into_response();
     }
+
+    let completion = Arc::new(Mutex::new(String::new()));
 
     let stream = resp
         .into_body()
         .into_data_stream()
         .eventsource()
         .map_ok(move |event| {
+            let completion = completion.clone();
             let new_event = axum::response::sse::Event::default()
                 .event(event.event)
                 .id(event.id);
@@ -200,19 +206,39 @@ pub async fn add_usage_info(resp: Response) -> impl IntoResponse {
             let Ok(parsed) = serde_json::from_str::<StreamEvent>(&event.data) else {
                 return new_event.data(event.data);
             };
+
             match parsed {
                 StreamEvent::MessageStart { mut message } => {
-                    message.usage = Some(usage.to_owned());
+                    message.usage = Some(usage_from_context.clone());
                     new_event
                         .json_data(StreamEvent::MessageStart { message })
                         .unwrap()
                 }
-                StreamEvent::MessageDelta { delta, usage } => {
-                    let usage = usage.unwrap_or_default();
+                StreamEvent::ContentBlockDelta { delta, .. } => {
+                    if let crate::types::claude::ContentBlockDelta::TextDelta { text } = delta {
+                        completion.lock().unwrap().push_str(&text);
+                    }
+                    new_event.data(event.data)
+                }
+                StreamEvent::MessageDelta { delta, mut usage } => {
+                    if delta.stop_reason.is_some() {
+                        let mut final_usage = usage.unwrap_or_default();
+                        if final_usage.output_tokens == 0 {
+                            let bpe = o200k_base().expect("Failed to get tiktoken");
+                            let calculated_output = bpe.encode_with_special_tokens(&completion.lock().unwrap()).len() as u32;
+                            if calculated_output > 0 {
+                                final_usage.output_tokens = calculated_output;
+                            }
+                        }
+                        // Always carry over the input_tokens
+                        final_usage.input_tokens = usage_from_context.input_tokens;
+                        usage = Some(final_usage);
+                    }
+
                     new_event
                         .json_data(StreamEvent::MessageDelta {
                             delta,
-                            usage: Some(usage),
+                            usage,
                         })
                         .unwrap()
                 }
@@ -236,7 +262,7 @@ pub async fn check_overloaded(mut resp: Response) -> Response {
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| !v.contains("text/event-stream"))
+        .is_some_and(|v| !v.contains("text-event-stream"))
     {
         resp.extensions_mut().remove::<ClaudeContext>();
     }
