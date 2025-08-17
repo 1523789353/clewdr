@@ -1,21 +1,24 @@
 use axum::{
-    Json,
     body::{self, Body},
     response::{IntoResponse, Response, Sse},
+    Json,
 };
 use eventsource_stream::Eventsource;
+use futures::StreamExt;
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use tracing::warn;
 
 use super::{ClaudeApiFormat, transform_stream};
 use crate::{
-    middleware::claude::{ClaudeContext, transforms_json},
-    types::claude::{ContentBlock, CreateMessageResponse, StreamEvent, Usage},
+    middleware::claude::{transforms_json, ClaudeContext},
+    types::claude::{ContentBlock, CreateMessageResponse, StreamEvent},
 };
-use futures::StreamExt;
 
-async fn aggregate_stream(resp: Response, cx: &ClaudeContext) -> Result<CreateMessageResponse, Response> {
+async fn aggregate_stream(
+    resp: Response,
+    cx: &ClaudeContext,
+) -> Result<CreateMessageResponse, Response> {
     let mut response = CreateMessageResponse::default();
     let mut usage = cx.usage().to_owned();
     usage.output_tokens = 0; // Reset output tokens before accumulating
@@ -42,26 +45,45 @@ async fn aggregate_stream(resp: Response, cx: &ClaudeContext) -> Result<CreateMe
                 response.model = message.model;
                 // message.usage in start event is not reliable, we use the one from context
             }
-            StreamEvent::ContentBlockStart { index, content_block } => {
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block,
+            } => {
                 if index >= content_blocks.len() {
-                    content_blocks.resize(index + 1, ContentBlock::Text { text: String::new() }); // Placeholder
+                    content_blocks.resize(
+                        index + 1,
+                        ContentBlock::Text {
+                            text: String::new(),
+                        },
+                    ); // Placeholder
                 }
                 content_blocks[index] = content_block;
             }
             StreamEvent::ContentBlockDelta { index, delta } => {
                 if let Some(block) = content_blocks.get_mut(index) {
                     match (block, delta) {
-                        (ContentBlock::Text { text }, crate::types::claude::ContentBlockDelta::TextDelta { text: delta_text }) => {
+                        (
+                            ContentBlock::Text { text },
+                            crate::types::claude::ContentBlockDelta::TextDelta { text: delta_text },
+                        ) => {
                             text.push_str(&delta_text);
                         }
-                        (ContentBlock::Thinking { thinking, .. }, crate::types::claude::ContentBlockDelta::ThinkingDelta { thinking: delta_thinking }) => {
+                        (
+                            ContentBlock::Thinking { thinking, .. },
+                            crate::types::claude::ContentBlockDelta::ThinkingDelta {
+                                thinking: delta_thinking,
+                            },
+                        ) => {
                             thinking.push_str(&delta_thinking);
                         }
                         _ => {}
                     }
                 }
             }
-            StreamEvent::MessageDelta { delta, usage: new_usage } => {
+            StreamEvent::MessageDelta {
+                delta,
+                usage: new_usage,
+            } => {
                 if let Some(reason) = delta.stop_reason {
                     stop_reason = Some(reason);
                 }
@@ -86,7 +108,6 @@ async fn aggregate_stream(resp: Response, cx: &ClaudeContext) -> Result<CreateMe
 
     Ok(response)
 }
-
 
 async fn parse_response<T>(resp: Response) -> Result<T, Response>
 where
@@ -125,26 +146,30 @@ where
 /// # Returns
 ///
 /// The original or transformed response as appropriate
-pub async fn to_oai(resp: Response) -> impl IntoResponse {
-    let Some(cx) = resp.extensions().get::<ClaudeContext>() else {
-        return resp;
+pub async fn to_oai(mut resp: Response) -> impl IntoResponse {
+    let Some(cx) = resp.extensions_mut().remove::<ClaudeContext>() else {
+        return resp.into_response();
     };
     if ClaudeApiFormat::Claude == cx.api_format() {
-        return resp;
+        // re-insert the context for other middlewares
+        resp.extensions_mut().insert(cx);
+        return resp.into_response();
     }
 
     if cx.pseudo_non_stream() {
-        return match aggregate_stream(resp, cx).await {
+        return match aggregate_stream(resp, &cx).await {
             Ok(response) => Json(transforms_json(response)).into_response(),
             Err(resp) => resp,
         };
     }
     if !cx.is_stream() {
-        match parse_response::<CreateMessageResponse>(resp).await {
-            Ok(response) => return Json(transforms_json(response)).into_response(),
-            Err(resp) => return resp,
-        }
+        return match parse_response::<CreateMessageResponse>(resp).await {
+            Ok(response) => Json(transforms_json(response)).into_response(),
+            Err(resp) => resp,
+        };
     }
+    // re-insert the context for other middlewares
+    resp.extensions_mut().insert(cx);
     let stream = resp.into_body().into_data_stream().eventsource();
     let stream = transform_stream(stream);
     Sse::new(stream)
@@ -152,13 +177,13 @@ pub async fn to_oai(resp: Response) -> impl IntoResponse {
         .into_response()
 }
 
-pub async fn add_usage_info(resp: Response) -> impl IntoResponse {
-    let Some(cx) = resp.extensions().get::<ClaudeContext>() else {
-        return resp;
+pub async fn add_usage_info(mut resp: Response) -> impl IntoResponse {
+    let Some(cx) = resp.extensions_mut().remove::<ClaudeContext>() else {
+        return resp.into_response();
     };
 
     if cx.pseudo_non_stream() {
-        return match aggregate_stream(resp, cx).await {
+        return match aggregate_stream(resp, &cx).await {
             Ok(response) => Json(response).into_response(),
             Err(resp) => resp,
         };
@@ -175,6 +200,8 @@ pub async fn add_usage_info(resp: Response) -> impl IntoResponse {
         response.usage = Some(usage);
         return Json(response).into_response();
     }
+    // re-insert the context for other middlewares
+    resp.extensions_mut().insert(cx);
     let stream = resp
         .into_body()
         .into_data_stream()
@@ -227,7 +254,7 @@ pub async fn check_overloaded(mut resp: Response) -> Response {
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| !v.contains("text/event-stream"))
+        .is_some_and(|v| !v.contains("text-event-stream"))
     {
         resp.extensions_mut().remove::<ClaudeContext>();
     }
