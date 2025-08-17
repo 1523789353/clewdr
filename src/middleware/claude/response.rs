@@ -11,16 +11,15 @@ use tracing::warn;
 use super::{ClaudeApiFormat, transform_stream};
 use crate::{
     middleware::claude::{ClaudeContext, transforms_json},
-    types::claude::{CreateMessageResponse, StreamEvent},
+    types::claude::{ContentBlock, CreateMessageResponse, StreamEvent, Usage},
 };
 use futures::StreamExt;
-use crate::types::claude::{ContentBlock, Usage};
 
 async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Response> {
-    let mut completion = String::new();
     let mut response = CreateMessageResponse::default();
     let mut usage = Usage::default();
     let mut stop_reason = None;
+    let mut content_blocks: Vec<ContentBlock> = Vec::new();
 
     let stream = resp.into_body().into_data_stream().eventsource();
     let mut stream = Box::pin(stream);
@@ -39,20 +38,27 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
                 response.type_ = message.type_;
                 response.role = message.role;
                 response.model = message.model;
-                response.content = message.content;
                 if let Some(u) = message.usage {
                     usage.input_tokens = u.input_tokens;
                 }
             }
-            StreamEvent::ContentBlockDelta { delta, .. } => {
-                match delta {
-                    crate::types::claude::ContentBlockDelta::TextDelta { text } => {
-                        completion.push_str(&text);
+            StreamEvent::ContentBlockStart { index, content_block } => {
+                if index >= content_blocks.len() {
+                    content_blocks.resize(index + 1, ContentBlock::Text { text: String::new() }); // Placeholder
+                }
+                content_blocks[index] = content_block;
+            }
+            StreamEvent::ContentBlockDelta { index, delta } => {
+                if let Some(block) = content_blocks.get_mut(index) {
+                    match (block, delta) {
+                        (ContentBlock::Text { text }, crate::types::claude::ContentBlockDelta::TextDelta { text: delta_text }) => {
+                            text.push_str(&delta_text);
+                        }
+                        (ContentBlock::Thinking { thinking, .. }, crate::types::claude::ContentBlockDelta::ThinkingDelta { thinking: delta_thinking }) => {
+                            thinking.push_str(&delta_thinking);
+                        }
+                        _ => {}
                     }
-                    crate::types::claude::ContentBlockDelta::ThinkingDelta { thinking } => {
-                        completion.push_str(&thinking);
-                    }
-                    _ => (),
                 }
             }
             StreamEvent::MessageDelta { delta, usage: new_usage } => {
@@ -63,15 +69,13 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
                     usage.output_tokens += u.output_tokens;
                 }
             }
-            StreamEvent::MessageStop { .. } => {}
             _ => (),
         }
     }
 
-    response.content = vec![ContentBlock::text(completion)];
+    response.content = content_blocks;
     response.stop_reason = stop_reason;
 
-    // Calculate output tokens as a fallback, since usage field in stream is not always reliable
     usage.output_tokens = response.count_tokens();
     response.usage = Some(usage);
 
