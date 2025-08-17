@@ -51,6 +51,8 @@ pub struct ClaudeWebContext {
     pub(super) stop_sequences: Vec<String>,
     /// User information about input and output tokens
     pub(super) usage: Usage,
+    /// Whether to use pseudo non-stream mode
+    pub(super) pseudo_non_stream: bool,
 }
 
 /// Predefined test message in Claude format for connection testing
@@ -107,7 +109,7 @@ where
     type Rejection = ClewdrError;
 
     async fn from_request(req: Request, _: &S) -> Result<Self, Self::Rejection> {
-        let NormalizeRequest(body, format) = NormalizeRequest::from_request(req, &()).await?;
+        let NormalizeRequest(mut body, format) = NormalizeRequest::from_request(req, &()).await?;
 
         // Check for test messages and respond appropriately
         if !body.stream.unwrap_or_default()
@@ -120,6 +122,17 @@ where
 
         // Determine streaming status and API format
         let stream = body.stream.unwrap_or_default();
+        let config = CLEWDR_CONFIG.load();
+        let pseudo_non_stream = if config.claude_cookie_pseudo_non_stream && !stream {
+            tracing::info!("[PSEUDO] Downstream non-stream request received. Activating pseudo non-stream mode.");
+            crate::utils::print_out_json(&body, "pseudo_downstream_req.json");
+            body.stream = Some(true); // Force stream for upstream
+            tracing::info!("[PSEUDO] Upstream stream request created.");
+            crate::utils::print_out_json(&body, "pseudo_upstream_req.json");
+            true
+        } else {
+            false
+        };
 
         let input_tokens = body.count_tokens();
         let info = ClaudeWebContext {
@@ -130,6 +143,7 @@ where
                 input_tokens,
                 output_tokens: 0, // Placeholder for output token count
             },
+            pseudo_non_stream,
         };
 
         Ok(Self(body, ClaudeContext::Web(info)))

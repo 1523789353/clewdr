@@ -13,6 +13,9 @@ use crate::{
     middleware::claude::{ClaudeContext, transforms_json},
     types::claude::{CreateMessageResponse, StreamEvent},
 };
+use futures::StreamExt;
+use crate::types::claude::{ContentBlock, CreateMessageResponseDelta, StopReason, Usage};
+
 
 async fn parse_response<T>(resp: Response) -> Result<T, Response>
 where
@@ -29,6 +32,71 @@ where
             .header(CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .unwrap());
+async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Response> {
+    let mut completion = String::new();
+    let mut response = CreateMessageResponse::default();
+    let mut usage = Usage::default();
+    let mut stop_reason = None;
+
+    let stream = resp.into_body().into_data_stream().eventsource();
+    let mut stream = Box::pin(stream);
+
+    while let Some(Ok(event)) = stream.next().await {
+        if event.event == "error" {
+            warn!("[PSEUDO] SSE error: {}", event.data);
+            continue;
+        }
+        tracing::info!("[PSEUDO] Upstream chunk received: {}", event.data);
+        let Ok(parsed) = serde_json::from_str::<StreamEvent>(&event.data) else {
+            continue;
+        };
+        match parsed {
+            StreamEvent::MessageStart { message } => {
+                response = message;
+            }
+            StreamEvent::ContentBlockDelta { delta, .. } => {
+                if let crate::types::claude::ContentBlockDelta::TextDelta { text } = delta {
+                    completion.push_str(&text);
+                }
+            }
+            StreamEvent::MessageDelta { delta, usage: new_usage } => {
+                if let Some(reason) = delta.stop_reason {
+                    stop_reason = Some(reason);
+                }
+                if let Some(u) = new_usage {
+                    usage = u;
+                }
+            }
+            StreamEvent::MessageStop { .. } => {
+                // The final usage is often in MessageDelta, but we can confirm here
+            }
+            _ => (),
+        }
+    }
+
+    if let Some(last_block) = response.content.last_mut() {
+        if let ContentBlock::Text { text } = last_block {
+            *text = completion;
+        } else {
+            response.content.push(ContentBlock::Text { text: completion });
+        }
+    } else {
+        response.content.push(ContentBlock::Text { text: completion });
+    }
+
+    response.stop_reason = stop_reason;
+    response.usage = Some(usage);
+    // trick to get the correct output tokens
+    let output_tokens = response.count_tokens();
+    if let Some(u) = response.usage.as_mut() {
+        u.output_tokens = output_tokens;
+    }
+
+    tracing::info!("[PSEUDO] Downstream non-stream response created.");
+    crate::utils::print_out_json(&response, "pseudo_downstream_resp.json");
+
+    Ok(response)
+}
     };
     Ok(parsed)
 }
@@ -58,6 +126,13 @@ pub async fn to_oai(resp: Response) -> impl IntoResponse {
     if ClaudeApiFormat::Claude == cx.api_format() {
         return resp;
     }
+
+    if cx.pseudo_non_stream() {
+        return match aggregate_stream(resp).await {
+            Ok(response) => Json(transforms_json(response)).into_response(),
+            Err(resp) => resp,
+        };
+    }
     if !cx.is_stream() {
         match parse_response::<CreateMessageResponse>(resp).await {
             Ok(response) => return Json(transforms_json(response)).into_response(),
@@ -75,6 +150,14 @@ pub async fn add_usage_info(resp: Response) -> impl IntoResponse {
     let Some(cx) = resp.extensions().get::<ClaudeContext>() else {
         return resp;
     };
+
+    if cx.pseudo_non_stream() {
+        return match aggregate_stream(resp).await {
+            Ok(response) => Json(response).into_response(),
+            Err(resp) => resp,
+        };
+    }
+
     let (mut usage, stream) = (cx.usage().to_owned(), cx.is_stream());
     if !stream {
         let mut response = match parse_response::<CreateMessageResponse>(resp).await {

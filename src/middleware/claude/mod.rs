@@ -38,6 +38,13 @@ impl ClaudeContext {
         }
     }
 
+    pub fn pseudo_non_stream(&self) -> bool {
+        match self {
+            ClaudeContext::Web(ctx) => ctx.pseudo_non_stream,
+            ClaudeContext::Code(_) => false, // Not implemented for Code
+        }
+    }
+
     pub fn api_format(&self) -> ClaudeApiFormat {
         match self {
             ClaudeContext::Web(ctx) => ctx.api_format,

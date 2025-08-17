@@ -138,6 +138,10 @@ pub struct ClewdrConfig {
     #[serde(default)]
     pub custom_system: Option<String>,
 
+    // Claude Cookie settings, can hot reload
+    #[serde(default)]
+    pub claude_cookie_pseudo_non_stream: bool,
+
     // Skip field, can hot reload
     #[serde(skip)]
     pub wreq_proxy: Option<Proxy>,
@@ -175,6 +179,7 @@ impl Default for ClewdrConfig {
             claude_code_client_id: None,
             custom_system: None,
             no_fs: false,
+            claude_cookie_pseudo_non_stream: false,
         }
     }
 }
