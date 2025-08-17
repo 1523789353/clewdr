@@ -15,7 +15,7 @@ use tracing::warn;
 use super::{ClaudeApiFormat, transform_stream};
 use crate::{
     middleware::claude::{transforms_json, ClaudeContext},
-    types::claude::{ContentBlock, CreateMessageResponse, StreamEvent, StreamUsage, Usage},
+    types::claude::{ContentBlock, CreateMessageResponse, StreamEvent},
 };
 
 async fn aggregate_stream(
@@ -175,7 +175,7 @@ pub async fn add_usage_info(resp: Response) -> impl IntoResponse {
         };
     }
 
-    let (usage_from_context, stream) = (cx.usage().to_owned(), cx.is_stream());
+    let (mut usage_from_context, stream) = (cx.usage().to_owned(), cx.is_stream());
     if !stream {
         let mut response = match parse_response::<CreateMessageResponse>(resp).await {
             Ok(response) => response,
