@@ -172,7 +172,7 @@ pub async fn add_usage_info(resp: Response) -> impl IntoResponse {
         };
     }
 
-    let (usage, stream) = (cx.usage().to_owned(), cx.is_stream());
+    let (mut usage, stream) = (cx.usage().to_owned(), cx.is_stream());
     if !stream {
         let mut response = match parse_response::<CreateMessageResponse>(resp).await {
             Ok(response) => response,
