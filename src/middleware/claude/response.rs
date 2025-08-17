@@ -14,24 +14,9 @@ use crate::{
     types::claude::{CreateMessageResponse, StreamEvent},
 };
 use futures::StreamExt;
-use crate::types::claude::{ContentBlock, CreateMessageResponseDelta, StopReason, Usage};
+use crate::types::claude::{ContentBlock, StreamUsage, StopReason, Usage};
 
 
-async fn parse_response<T>(resp: Response) -> Result<T, Response>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let body = body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .inspect_err(|err| {
-            warn!("Failed to read response body: {}", err);
-        })
-        .unwrap_or_default();
-    let Ok(parsed) = serde_json::from_slice::<T>(&body) else {
-        return Err(Response::builder()
-            .header(CONTENT_TYPE, "application/json")
-            .body(Body::from(body))
-            .unwrap());
 async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Response> {
     let mut completion = String::new();
     let mut response = CreateMessageResponse::default();
@@ -52,7 +37,14 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
         };
         match parsed {
             StreamEvent::MessageStart { message } => {
-                response = message;
+                response.id = message.id;
+                response.type_ = message.type_;
+                response.role = message.role;
+                response.model = message.model;
+                response.content = message.content;
+                if let Some(u) = message.usage {
+                    usage.input_tokens = u.input_tokens;
+                }
             }
             StreamEvent::ContentBlockDelta { delta, .. } => {
                 if let crate::types::claude::ContentBlockDelta::TextDelta { text } = delta {
@@ -64,7 +56,7 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
                     stop_reason = Some(reason);
                 }
                 if let Some(u) = new_usage {
-                    usage = u;
+                    usage.output_tokens += u.output_tokens;
                 }
             }
             StreamEvent::MessageStop { .. } => {
@@ -74,29 +66,31 @@ async fn aggregate_stream(resp: Response) -> Result<CreateMessageResponse, Respo
         }
     }
 
-    if let Some(last_block) = response.content.last_mut() {
-        if let ContentBlock::Text { text } = last_block {
-            *text = completion;
-        } else {
-            response.content.push(ContentBlock::Text { text: completion });
-        }
-    } else {
-        response.content.push(ContentBlock::Text { text: completion });
-    }
-
+    response.content = vec![ContentBlock::text(completion)];
     response.stop_reason = stop_reason;
     response.usage = Some(usage);
-    // trick to get the correct output tokens
-    let output_tokens = response.count_tokens();
-    if let Some(u) = response.usage.as_mut() {
-        u.output_tokens = output_tokens;
-    }
 
     tracing::info!("[PSEUDO] Downstream non-stream response created.");
     crate::utils::print_out_json(&response, "pseudo_downstream_resp.json");
 
     Ok(response)
 }
+
+async fn parse_response<T>(resp: Response) -> Result<T, Response>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let body = body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .inspect_err(|err| {
+            warn!("Failed to read response body: {}", err);
+        })
+        .unwrap_or_default();
+    let Ok(parsed) = serde_json::from_slice::<T>(&body) else {
+        return Err(Response::builder()
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap());
     };
     Ok(parsed)
 }

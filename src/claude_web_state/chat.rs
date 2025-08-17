@@ -43,11 +43,7 @@ impl ClaudeWebState {
             let mut state = self.to_owned();
             let p = p.to_owned();
 
-            // let cookie = state.request_cookie().await?;
-            let cookie = match state.request_cookie().await {
-                Ok(cookie) => cookie,
-                Err(_) => Err(ClewdrError::NoCookieAvailable)
-            };
+            let cookie = state.request_cookie().await.map_err(|_| ClewdrError::NoCookieAvailable)?;
             // check if request is successful
             let web_res = async { state.bootstrap().await.and(state.send_chat(p).await) };
             let transform_res = web_res

@@ -280,7 +280,7 @@ pub struct Metadata {
 }
 
 /// Response from creating a message
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Default,Clone)]
 pub struct CreateMessageResponse {
     /// Content blocks in the response
     pub content: Vec<ContentBlock>,
